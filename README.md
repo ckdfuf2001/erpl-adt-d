@@ -1,4 +1,50 @@
-# erpl-adt
+# erpl-adt-d (fork)
+
+> Fork of [DataZooDE/erpl-adt](https://github.com/DataZooDE/erpl-adt) with **per-call SAP destinations** for the MCP server.
+> Upstream keeps a single connection fixed at `mcp` startup; this fork lets every `adt_*` / `bw_*` tool call pick its own destination, so concurrent clients with different systems never mix.
+> Sync with upstream via the `upstream` remote.
+
+## What changed vs upstream
+
+- **`destination` parameter (required)** on every `adt_*` / `bw_*` / `catalog_build` / `catalog_export` tool. Each call resolves its own `AdtSession` from a `DestinationManager` (lazy, cached per name, mutex-guarded).
+- **No global current destination** - stateless by design, safe for parallel agents and `mcp --http` multi-client use.
+- **New management tools** (no `destination` needed):
+  - `adt_list_destinations` - list configured destinations (passwords redacted)
+  - `adt_add_destination` - upsert a destination into the JSON file and persist immediately
+  - `adt_remove_destination` - delete a destination from the file
+- **New flag**: `erpl-adt mcp --destinations-file <path>` (default: `.erpl-destinations.json`, or `ERPL_ADT_DESTINATIONS` env). Startup `--host/--port/--user/...` flags are still honoured and registered as the `default` destination, so old single-system setups keep working by passing `"destination": "default"`.
+- **Password handling**: `password_env` preferred, `${VAR}` expansion supported, plaintext `password` only if you opt in. See `destinations.example.json`.
+
+## Destinations file
+
+```json
+{
+  "destinations": [
+    {
+      "name": "DEV",
+      "host": "sap-dev.example.com",
+      "port": 44300,
+      "user": "DEVELOPER",
+      "password_env": "SAP_PASSWORD_DEV",
+      "client": "100",
+      "language": "EN",
+      "https": true,
+      "insecure": true,
+      "timeout": 600
+    }
+  ]
+}
+```
+
+```bash
+erpl-adt mcp --destinations-file ./my-destinations.json --tools adt
+```
+
+Tool call example: `{ "destination": "DEV", "query": "ZCL_*" }`.
+
+Build: same as upstream (`make release`, vcpkg + CMake + Ninja).
+
+---
 
 CLI and MCP server for the SAP ADT REST API — a single binary that talks the same HTTP endpoints Eclipse ADT uses. No Eclipse, no SAP NW RFC SDK, no JVM.
 
