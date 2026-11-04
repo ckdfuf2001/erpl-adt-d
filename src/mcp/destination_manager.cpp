@@ -56,7 +56,7 @@ Result<void, Error> DestinationManager::Load() {
     d.name = e["name"].get<std::string>();
     if (d.name.empty()) continue;
     d.host = e.value("host", "localhost");
-    d.port = e.value("port", (int)50000);
+    d.port = static_cast<uint16_t>(e.value("port", 50000));
     d.user = e.value("user", "DEVELOPER");
     d.password = e.value("password", "");
     d.password_env = e.value("password_env", "");
