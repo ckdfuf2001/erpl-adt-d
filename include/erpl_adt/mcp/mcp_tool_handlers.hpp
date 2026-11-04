@@ -1,13 +1,13 @@
 #pragma once
 
-#include <erpl_adt/adt/i_adt_session.hpp>
+#include <erpl_adt/mcp/destination_manager.hpp>
 #include <erpl_adt/mcp/tool_registry.hpp>
 
 namespace erpl_adt {
 
-// Register all ADT operation tools with the MCP tool registry.
-// Each tool handler captures &session by reference — single-threaded,
-// one session shared across all tool calls.
-void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session);
+// Register all ADT operation tools. Each tool requires a destination
+// parameter and resolves its own session per call, so concurrent
+// clients with different destinations never mix.
+void RegisterAdtTools(ToolRegistry& registry, DestinationManager& manager);
 
 } // namespace erpl_adt

@@ -1,0 +1,29 @@
+{
+  "_comment": "erpl-adt MCP destinations. password plaintext보다 password_env 권장. ${VAR} 확장 지원.",
+  "destinations": [
+    {
+      "name": "DEV",
+      "host": "sap-dev.example.com",
+      "port": 44300,
+      "user": "DEVELOPER",
+      "password_env": "SAP_PASSWORD_DEV",
+      "client": "100",
+      "language": "EN",
+      "https": true,
+      "insecure": true,
+      "timeout": 600
+    },
+    {
+      "name": "QAS",
+      "host": "sap-qas.example.com",
+      "port": 44300,
+      "user": "DEVELOPER",
+      "password_env": "SAP_PASSWORD_QAS",
+      "client": "100",
+      "language": "EN",
+      "https": true,
+      "insecure": true,
+      "timeout": 600
+    }
+  ]
+}

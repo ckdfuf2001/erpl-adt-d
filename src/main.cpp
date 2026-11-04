@@ -14,6 +14,8 @@
 #include <erpl_adt/mcp/http_security_sources.hpp>
 #include <erpl_adt/mcp/mcp_http_server.hpp>
 #include <erpl_adt/mcp/mcp_tool_handlers.hpp>
+#include <erpl_adt/mcp/destination_manager.hpp>
+#include <erpl_adt/mcp/destination_tools.hpp>
 #include <erpl_adt/storage/duckdb_catalog_store.hpp>
 #include <erpl_adt/workflow/deploy_workflow.hpp>
 
@@ -117,6 +119,7 @@ void PrintMcpHelp(std::ostream& out) {
     out << "  --mcp-host <addr>    Address to bind with --http (default: 127.0.0.1)\n";
     out << "  --mcp-port <n>       Port to bind with --http (default: 8383)\n";
     out << "  --catalog-db <path>  Also expose the catalog_* tools over a DuckDB cache\n";
+    out << "  --destinations-file <path> SAP destinations JSON (default: .erpl-destinations.json)\n";
     out << "  --tools <families>   Expose only these tool families (adt, bw, catalog;\n";
     out << "                       comma-separated). Default: all registered families\n\n";
     out << "HTTP ACCESS CONTROL (--http only)\n";
@@ -557,12 +560,35 @@ int HandleMcpServer(int argc, const char* const* argv) {
         opts.disable_tls_verify = true;
     }
 
-    auto session = std::make_unique<AdtSession>(host, port, use_https, user,
-                                                password, sap_client, opts);
+    Destination dest_default;
+    dest_default.name = "default";
+    dest_default.host = host;
+    dest_default.port = port;
+    dest_default.user = user;
+    dest_default.password = password;
+    if (flags.count("password-env")) dest_default.password_env = get("password-env");
+    dest_default.client = client_str;
+    dest_default.language = language_str;
+    dest_default.use_https = use_https;
+    dest_default.insecure = (get("insecure") == "true");
+    if (!get("timeout").empty()) { try { dest_default.timeout_sec = std::stoi(get("timeout")); } catch (...) {} }
 
-    // Create tool registry and register all ADT tools.
+    std::string dest_file = get("destinations-file");
+    if (dest_file.empty()) {
+        if (const char* e = std::getenv("ERPL_ADT_DESTINATIONS")) dest_file = e;
+        else dest_file = ".erpl-destinations.json";
+    }
+    DestinationManager dest_manager(dest_file);
+    {
+        auto lr = dest_manager.Load();
+        if (lr.IsErr()) { std::cerr << "Error: destinations: " << lr.Error().ToString() << "\n"; return kExitInternal; }
+    }
+    dest_manager.AddDefault(dest_default);
+
+    // Create tool registry and register all ADT tools (per-call destination).
     ToolRegistry registry;
-    RegisterAdtTools(registry, *session);
+    RegisterAdtTools(registry, dest_manager);
+    RegisterDestinationTools(registry, dest_manager);
 
     // catalog_* tools (BRD.md FR-MCP-1) — opened once here, for the process
     // lifetime (NFR-1). Optional: absent unless --catalog-db is passed,

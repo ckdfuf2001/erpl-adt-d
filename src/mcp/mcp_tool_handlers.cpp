@@ -1,4 +1,5 @@
 #include <erpl_adt/mcp/mcp_tool_handlers.hpp>
+#include <erpl_adt/mcp/destination_manager.hpp>
 #include <erpl_adt/mcp/tool_metadata.hpp>
 
 #include <erpl_adt/adt/bw_activation.hpp>
@@ -132,6 +133,20 @@ nlohmann::json MakeSchema(nlohmann::json properties,
     return {{"type", "object"},
             {"properties", std::move(properties)},
             {"required", std::move(required)}};
+}
+
+// Per-call destination: every tool requires a destination name and resolves its own session from the manager. No global current, so concurrent clients never mix.
+// See adt_list_destinations / adt_add_destination for management.
+nlohmann::json DestinationProp() {
+  return StringProp("Configured destination name (see adt_list_destinations). Required.");
+}
+
+nlohmann::json WithDestination(nlohmann::json props, nlohmann::json required) {
+  if (props.is_null()) props = nlohmann::json::object();
+  props["destination"] = DestinationProp();
+  if (required.is_null()) required = nlohmann::json::array();
+  required.push_back("destination");
+  return MakeSchema(std::move(props), std::move(required));
 }
 
 // ---------------------------------------------------------------------------
@@ -842,53 +857,77 @@ ToolResult HandleActivateObject(IAdtSession& session,
 // ---------------------------------------------------------------------------
 // RegisterAdtTools
 // ---------------------------------------------------------------------------
-void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
+void RegisterAdtTools(ToolRegistry& registry, DestinationManager& manager) {
     // === Read-only tools ===
 
     registry.Register(
         "adt_search",
         "Search the ABAP repository for objects by name pattern. "
         "Use wildcards (*). Returns object URIs needed for all other operations.",
-        MakeSchema(
+        WithDestination(
             {{"query", StringProp("Search pattern with wildcards (e.g., ZCL_*)")},
              {"max_results", IntProp("Maximum number of results (default: 100)")},
              {"object_type", StringProp("Filter by type: CLAS, PROG, TABL, INTF, FUGR")}},
             {"query"}),
-        [&session](const nlohmann::json& params) {
-            return HandleSearch(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleSearch(*sess, params);
         });
 
     registry.Register(
         "adt_read_object",
         "Read metadata and structure of an ABAP object. "
         "Returns name, type, source URIs, includes, and version info.",
-        MakeSchema(
+        WithDestination(
             {{"uri", StringProp("Object URI (e.g., /sap/bc/adt/oo/classes/zcl_example)")}},
             {"uri"}),
-        [&session](const nlohmann::json& params) {
-            return HandleReadObject(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleReadObject(*sess, params);
         });
 
     registry.Register(
         "adt_read_source",
         "Read the source code of an ABAP object. Returns plain text source.",
-        MakeSchema(
+        WithDestination(
             {{"uri", StringProp("Source URI (e.g., /sap/bc/adt/oo/classes/zcl_test/source/main)")},
              {"version", StringProp("Version: 'active' (default) or 'inactive'")}},
             {"uri"}),
-        [&session](const nlohmann::json& params) {
-            return HandleReadSource(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleReadSource(*sess, params);
         });
 
     registry.Register(
         "adt_check_syntax",
         "Run a syntax check on an ABAP source object. "
         "Returns errors and warnings with line numbers.",
-        MakeSchema(
+        WithDestination(
             {{"uri", StringProp("Source URI to check")}},
             {"uri"}),
-        [&session](const nlohmann::json& params) {
-            return HandleCheckSyntax(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleCheckSyntax(*sess, params);
         });
 
     registry.Register(
@@ -896,11 +935,17 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "Run ABAP Unit tests for an object or package. "
         "Returns structured pass/fail results with assertion messages. "
         "The primary feedback loop for code changes.",
-        MakeSchema(
+        WithDestination(
             {{"uri", StringProp("Object or package URI")}},
             {"uri"}),
-        [&session](const nlohmann::json& params) {
-            return HandleRunTests(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleRunTests(*sess, params);
         });
 
     registry.Register(
@@ -908,77 +953,119 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "Execute an ABAP class that implements IF_OO_ADT_CLASSRUN. "
         "Returns the console output as plain text. Useful for running data generators "
         "and console utilities without Eclipse. Example: /DMO/CL_FLIGHT_DATA_GENERATOR.",
-        MakeSchema(
+        WithDestination(
             {{"class_name", StringProp("ABAP class name (e.g. /DMO/CL_FLIGHT_DATA_GENERATOR) or full ADT URI")}},
             {"class_name"}),
-        [&session](const nlohmann::json& params) {
-            return HandleRunClass(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleRunClass(*sess, params);
         });
 
     registry.Register(
         "adt_run_atc",
         "Run ABAP Test Cockpit quality checks. "
         "Returns findings with severity and line numbers.",
-        MakeSchema(
+        WithDestination(
             {{"uri", StringProp("Object or package URI")},
              {"check_variant", StringProp("ATC check variant (default: DEFAULT)")}},
             {"uri"}),
-        [&session](const nlohmann::json& params) {
-            return HandleRunAtc(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleRunAtc(*sess, params);
         });
 
     registry.Register(
         "adt_list_transports",
         "List transport requests for a user. "
         "Returns transport numbers, descriptions, and status.",
-        MakeSchema(
+        WithDestination(
             {{"user", StringProp("SAP username (default: DEVELOPER)")}},
             nlohmann::json::array()),
-        [&session](const nlohmann::json& params) {
-            return HandleListTransports(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleListTransports(*sess, params);
         });
 
     registry.Register(
         "adt_read_table",
         "Get a database table definition including fields, types, and key info.",
-        MakeSchema(
+        WithDestination(
             {{"table_name", StringProp("Table name (e.g., SFLIGHT)")}},
             {"table_name"}),
-        [&session](const nlohmann::json& params) {
-            return HandleReadTable(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleReadTable(*sess, params);
         });
 
     registry.Register(
         "adt_read_cds",
         "Read the source code of a CDS view definition.",
-        MakeSchema(
+        WithDestination(
             {{"cds_name", StringProp("CDS view name")}},
             {"cds_name"}),
-        [&session](const nlohmann::json& params) {
-            return HandleReadCds(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleReadCds(*sess, params);
         });
 
     registry.Register(
         "adt_list_package",
         "List objects inside a package (non-recursive, one level).",
-        MakeSchema(
+        WithDestination(
             {{"package_name", StringProp("Package name (e.g., ZTEST)")}},
             {"package_name"}),
-        [&session](const nlohmann::json& params) {
-            return HandleListPackage(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleListPackage(*sess, params);
         });
 
     registry.Register(
         "adt_package_tree",
         "Recursively list all objects in a package hierarchy. "
         "Use this for exhaustive enumeration when search maxResults is not sufficient.",
-        MakeSchema(
+        WithDestination(
             {{"root_package", StringProp("Root package name")},
              {"type_filter", StringProp("Filter by object type: CLAS, PROG, TABL")},
              {"max_depth", IntProp("Maximum recursion depth (default: 50)")}},
             {"root_package"}),
-        [&session](const nlohmann::json& params) {
-            return HandlePackageTree(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandlePackageTree(*sess, params);
         });
 
     registry.Register(
@@ -988,22 +1075,34 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "answer was established — releases without a package object resource "
         "(e.g. SAP_BASIS 7.40) are resolved through the repository information "
         "system instead.",
-        MakeSchema(
+        WithDestination(
             {{"package_name", StringProp("Package name (e.g., ZTEST)")}},
             {"package_name"}),
-        [&session](const nlohmann::json& params) {
-            return HandlePackageExists(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandlePackageExists(*sess, params);
         });
 
     registry.Register(
         "adt_discover",
         "Discover available ADT services and capabilities grouped by workspace. "
         "Returns workspace-grouped service list and feature flags (abapGit, packages, activation).",
-        MakeSchema(
+        WithDestination(
             {{"workspace", StringProp("Filter by workspace name (e.g., \"Sources\")")}},
             nlohmann::json::array()),
-        [&session](const nlohmann::json& params) {
-            return HandleDiscover(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleDiscover(*sess, params);
         });
 
     // === Mutating tools ===
@@ -1018,22 +1117,34 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "error saying so — recover by locking again, not by retrying the write. "
         "Lock late and unlock promptly; while the lock is held nobody else can "
         "edit the object.",
-        MakeSchema(
+        WithDestination(
             {{"uri", StringProp("Object URI to lock")}},
             {"uri"}),
-        [&session](const nlohmann::json& params) {
-            return HandleLock(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleLock(*sess, params);
         });
 
     registry.Register(
         "adt_unlock",
         "Unlock a previously locked ABAP object.",
-        MakeSchema(
+        WithDestination(
             {{"uri", StringProp("Object URI to unlock")},
              {"lock_handle", StringProp("Lock handle from adt_lock")}},
             {"uri", "lock_handle"}),
-        [&session](const nlohmann::json& params) {
-            return HandleUnlock(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleUnlock(*sess, params);
         });
 
     registry.Register(
@@ -1041,20 +1152,26 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "Write source code to an ABAP object. "
         "Automatically handles lock/unlock cycle unless lock_handle is provided. "
         "Provide complete source, not a diff.",
-        MakeSchema(
+        WithDestination(
             {{"uri", StringProp("Source URI (e.g., /sap/bc/adt/oo/classes/zcl_test/source/main)")},
              {"source", StringProp("Complete ABAP source code to write")},
              {"lock_handle", StringProp("Lock handle (skips auto-lock if provided)")},
              {"transport", StringProp("Transport request number")}},
             {"uri", "source"}),
-        [&session](const nlohmann::json& params) {
-            return HandleWriteSource(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleWriteSource(*sess, params);
         });
 
     registry.Register(
         "adt_create_object",
         "Create an ABAP object, including RAP BDEF/BDO, SRVD/SRV and SRVB/SVB.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type (e.g., CLAS/OC, PROG/P)")},
              {"name", StringProp("Object name (e.g., ZCL_MY_CLASS)")},
              {"package_name", StringProp("Target package")},
@@ -1065,55 +1182,85 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"description", StringProp("Object description")},
              {"transport", StringProp("Transport request number")}},
             {"object_type", "name", "package_name"}),
-        [&session](const nlohmann::json& params) {
-            return HandleCreateObject(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleCreateObject(*sess, params);
         });
 
     registry.Register(
         "adt_delete_object",
         "Delete an ABAP object. "
         "Automatically handles lock/unlock unless lock_handle is provided.",
-        MakeSchema(
+        WithDestination(
             {{"uri", StringProp("Object URI to delete")},
              {"lock_handle", StringProp("Lock handle (skips auto-lock if provided)")},
              {"transport", StringProp("Transport request number")}},
             {"uri"}),
-        [&session](const nlohmann::json& params) {
-            return HandleDeleteObject(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleDeleteObject(*sess, params);
         });
 
     registry.Register(
         "adt_create_transport",
         "Create a new transport request.",
-        MakeSchema(
+        WithDestination(
             {{"description", StringProp("Transport description")},
              {"target_package", StringProp("Target package")}},
             {"description", "target_package"}),
-        [&session](const nlohmann::json& params) {
-            return HandleCreateTransport(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleCreateTransport(*sess, params);
         });
 
     registry.Register(
         "adt_release_transport",
         "Release a transport request for import.",
-        MakeSchema(
+        WithDestination(
             {{"transport_number", StringProp("Transport number (e.g., NPLK900001)")}},
             {"transport_number"}),
-        [&session](const nlohmann::json& params) {
-            return HandleReleaseTransport(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleReleaseTransport(*sess, params);
         });
 
     registry.Register(
         "adt_activate",
         "Activate an inactive ABAP object after writing source code. "
         "Optionally provide type and name for more reliable activation.",
-        MakeSchema(
+        WithDestination(
             {{"uri", StringProp("Object URI (e.g., /sap/bc/adt/oo/classes/ZCL_MY_CLASS)")},
              {"type", StringProp("Object type (e.g., CLAS/OC)")},
              {"name", StringProp("Object name (e.g., ZCL_MY_CLASS)")}},
             {"uri"}),
-        [&session](const nlohmann::json& params) {
-            return HandleActivateObject(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleActivateObject(*sess, params);
         });
 
     // === BW Modeling tools ===
@@ -1122,9 +1269,15 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_discover",
         "List available BW Modeling services. Returns scheme/term pairs and URIs "
         "for all BW endpoints the system supports.",
-        MakeSchema({}, {}),
-        [&session](const nlohmann::json&) -> ToolResult {
-            auto result = BwDiscover(session);
+        WithDestination({}, {}),
+        [&manager](const nlohmann::json& params) -> ToolResult {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            auto result = BwDiscover(*sess);
             if (result.IsErr()) return MakeErrorResult(result.Error());
             nlohmann::json j = nlohmann::json::array();
             for (const auto& s : result.Value().services) {
@@ -1140,7 +1293,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_search",
         "Search the BW repository for modeling objects (ADSO, IOBJ, HCPR, TRFN, etc.). "
         "Use wildcards (*). Returns object names, types, statuses, and URIs.",
-        MakeSchema(
+        WithDestination(
             {{"query", StringProp("Search pattern with wildcards (e.g., Z*, *SALES*)")},
              {"object_type", StringProp("Filter by type: ADSO, HCPR, IOBJ, TRFN, DTPA, RSDS")},
              {"object_sub_type", StringProp("Filter by subtype (e.g., REP, SOB, RKF)")},
@@ -1157,7 +1310,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"search_in_description", {{"type", "boolean"},
                                          {"description", "Also search in descriptions"}}}},
             {"query"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto query = RequireString(params, "query", err);
             if (!query) return err;
@@ -1193,7 +1346,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
                 opts.search_in_description = true;
             }
 
-            auto result = BwSearchObjects(session, opts);
+            auto result = BwSearchObjects(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -1217,13 +1370,13 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "description, status, package. Use version='m' for inactive version. "
         "Pass uri (from bw_search results) to read objects whose type doesn't "
         "map directly to a REST path segment.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type code (ADSO, IOBJ, TRFN, etc.). Used for content negotiation.")},
              {"object_name", StringProp("Object name")},
              {"version", StringProp("Version: a (active, default), m (modified), d (delivery)")},
              {"uri", StringProp("Direct URI from search results (overrides type/name path construction)")}},
             {}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             auto uri_val = OptString(params, "uri");
             bool has_uri = !uri_val.empty();
 
@@ -1242,7 +1395,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
 
             // Resolve content type from discovery (best-effort)
             if (!opts.object_type.empty()) {
-                auto disc = BwDiscover(session);
+                auto disc = BwDiscover(*sess);
                 if (disc.IsOk()) {
                     auto ct = BwResolveContentType(disc.Value(), opts.object_type);
                     if (!ct.empty()) {
@@ -1251,7 +1404,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
                 }
             }
 
-            auto result = BwReadObject(session, opts);
+            auto result = BwReadObject(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             const auto& meta = result.Value();
@@ -1285,7 +1438,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_create_object",
         "Create a BW object. Depending on object type you may provide copy-from parameters or XML content.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type (ADSO, IOBJ, etc.)")},
              {"object_name", StringProp("Object name")},
              {"package_name", StringProp("Package name")},
@@ -1293,7 +1446,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"copy_from_type", StringProp("Copy source object type")},
              {"content", StringProp("Optional XML payload")}},
             {"object_type", "object_name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto obj_type = RequireString(params, "object_type", err);
             if (!obj_type) return err;
@@ -1314,13 +1467,13 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
 
             // Resolve the media type from discovery (best-effort) so a system
             // advertising a different version wins over the built-in default.
-            auto disc = BwDiscover(session);
+            auto disc = BwDiscover(*sess);
             if (disc.IsOk()) {
                 auto ct = BwResolveContentType(disc.Value(), opts.object_type);
                 if (!ct.empty()) opts.content_type = ct;
             }
 
-            auto result = BwCreateObject(session, opts);
+            auto result = BwCreateObject(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j;
@@ -1339,12 +1492,12 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "rather than retrying the write. Note the lock belongs to the SAP "
         "user, so an abandoned one blocks the next attempt until it is "
         "released.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type (ADSO, IOBJ, etc.)")},
              {"object_name", StringProp("Object name")},
              {"activity", StringProp("Activity: CHAN (default), DELE, MAIN")}},
             {"object_type", "object_name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto obj_type = RequireString(params, "object_type", err);
             if (!obj_type) return err;
@@ -1352,8 +1505,8 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             if (!obj_name) return err;
             auto activity = OptString(params, "activity", "CHAN");
 
-            session.SetStateful(true);
-            auto result = BwLockObject(session, *obj_type, *obj_name, activity);
+            sess->SetStateful(true);
+            auto result = BwLockObject(*sess, *obj_type, *obj_name, activity);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             const auto& lock = result.Value();
@@ -1374,18 +1527,18 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_unlock_object",
         "Release a lock on a BW object.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type")},
              {"object_name", StringProp("Object name")}},
             {"object_type", "object_name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto obj_type = RequireString(params, "object_type", err);
             if (!obj_type) return err;
             auto obj_name = RequireString(params, "object_name", err);
             if (!obj_name) return err;
 
-            auto result = BwUnlockObject(session, *obj_type, *obj_name);
+            auto result = BwUnlockObject(*sess, *obj_type, *obj_name);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             return MakeOkResult({{"status", "unlocked"}});
@@ -1394,14 +1547,14 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_save_object",
         "Save a modified BW object. Requires prior lock.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type")},
              {"object_name", StringProp("Object name")},
              {"content", StringProp("Modified XML content")},
              {"lock_handle", StringProp("Lock handle from bw_lock_object")},
              {"transport", StringProp("Transport request number")}},
             {"object_type", "object_name", "content", "lock_handle"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto obj_type = RequireString(params, "object_type", err);
             if (!obj_type) return err;
@@ -1419,7 +1572,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             opts.lock_handle = *handle;
             opts.transport = OptString(params, "transport");
 
-            auto result = BwSaveObject(session, opts);
+            auto result = BwSaveObject(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             return MakeOkResult({{"status", "saved"}});
@@ -1428,13 +1581,13 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_delete_object",
         "Delete a BW object. Requires lock handle.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type")},
              {"object_name", StringProp("Object name")},
              {"lock_handle", StringProp("Lock handle")},
              {"transport", StringProp("Transport request number")}},
             {"object_type", "object_name", "lock_handle"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto obj_type = RequireString(params, "object_type", err);
             if (!obj_type) return err;
@@ -1443,7 +1596,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             auto handle = RequireString(params, "lock_handle", err);
             if (!handle) return err;
 
-            auto result = BwDeleteObject(session, *obj_type, *obj_name,
+            auto result = BwDeleteObject(*sess, *obj_type, *obj_name,
                                           *handle, OptString(params, "transport"));
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
@@ -1454,7 +1607,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_activate",
         "Activate BW objects. Supports validate (pre-check), simulate (dry run), "
         "and background modes. Can activate multiple objects at once.",
-        MakeSchema(
+        WithDestination(
             {{"objects", {{"type", "array"},
                           {"items", {{"type", "object"},
                                      {"properties", {{"name", StringProp("Object name")},
@@ -1465,7 +1618,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"force", {{"type", "boolean"}, {"description", "Force activation with warnings"}}},
              {"transport", StringProp("Transport request number")}},
             {"objects"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             if (!params.contains("objects") || !params["objects"].is_array()) {
                 return MakeParamError("Missing required parameter: objects");
             }
@@ -1491,7 +1644,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             auto transport = OptString(params, "transport");
             if (!transport.empty()) opts.transport = transport;
 
-            auto result = BwActivateObjects(session, opts);
+            auto result = BwActivateObjects(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             const auto& act = result.Value();
@@ -1513,11 +1666,11 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_transport_check",
         "Check BW transport state. Shows changeability, transport requests, "
         "and object lock states.",
-        MakeSchema(
+        WithDestination(
             {{"own_only", {{"type", "boolean"},
                            {"description", "Show only own transport requests"}}}},
             {}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             bool own_only = params.contains("own_only") &&
                             params["own_only"].is_boolean() &&
                             params["own_only"].get<bool>();
@@ -1577,13 +1730,13 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_transport_write",
         "Write a BW object to a transport request.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type")},
              {"object_name", StringProp("Object name")},
              {"transport", StringProp("Transport request number")},
              {"package", StringProp("Package name")}},
             {"object_type", "object_name", "transport"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto obj_type = RequireString(params, "object_type", err);
             if (!obj_type) return err;
@@ -1598,7 +1751,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             opts.transport = *transport;
             opts.package_name = OptString(params, "package");
 
-            auto result = BwTransportWrite(session, opts);
+            auto result = BwTransportWrite(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             const auto& wr = result.Value();
@@ -1617,10 +1770,10 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "GUID comes back as a tool error rather than a status. Poll every few "
         "seconds — activations and long checks take minutes, not "
         "milliseconds.",
-        MakeSchema(
+        WithDestination(
             {{"job_guid", StringProp("25-character job GUID")}},
             {"job_guid"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto guid = RequireString(params, "job_guid", err);
             if (!guid) return err;
@@ -1640,10 +1793,10 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_job_restart",
         "Restart a failed BW background job. Job must be in error state (status E).",
-        MakeSchema(
+        WithDestination(
             {{"job_guid", StringProp("25-character job GUID")}},
             {"job_guid"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto guid = RequireString(params, "job_guid", err);
             if (!guid) return err;
@@ -1661,10 +1814,10 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_job_cleanup",
         "Cleanup resources of a completed or failed BW background job. "
         "Removes temporary data, logs, and artifacts.",
-        MakeSchema(
+        WithDestination(
             {{"job_guid", StringProp("25-character job GUID")}},
             {"job_guid"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto guid = RequireString(params, "job_guid", err);
             if (!guid) return err;
@@ -1684,12 +1837,12 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_list_locks",
         "List active BW object locks. Shows who has locked which objects. "
         "Useful for diagnosing lock conflicts.",
-        MakeSchema(
+        WithDestination(
             {{"user", StringProp("Filter by lock owner user")},
              {"search", StringProp("Search pattern for object names")},
              {"max_results", IntProp("Maximum results (default: 100)")}},
             {}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             BwListLocksOptions opts;
             auto user = OptString(params, "user");
             if (!user.empty()) opts.user = user;
@@ -1697,7 +1850,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             if (!search.empty()) opts.search = search;
             opts.max_results = OptInt(params, "max_results", 100);
 
-            auto result = BwListLocks(session, opts);
+            auto result = BwListLocks(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -1723,7 +1876,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_delete_lock",
         "Delete a stuck BW object lock (admin operation). Use values from "
         "bw_list_locks output to identify the lock to delete.",
-        MakeSchema(
+        WithDestination(
             {{"user", StringProp("Lock owner user")},
              {"table_name", StringProp("Table name from lock entry (e.g., RSBWOBJ_ENQUEUE)")},
              {"arg", StringProp("Base64-encoded argument from lock entry")},
@@ -1732,7 +1885,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"owner1", StringProp("Base64-encoded owner1 from lock entry")},
              {"owner2", StringProp("Base64-encoded owner2 from lock entry")}},
             {"user", "table_name", "arg"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto user = RequireString(params, "user", err);
             if (!user) return err;
@@ -1750,7 +1903,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             opts.owner1 = OptString(params, "owner1");
             opts.owner2 = OptString(params, "owner2");
 
-            auto result = BwDeleteLock(session, opts);
+            auto result = BwDeleteLock(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j;
@@ -1764,9 +1917,15 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_dbinfo",
         "Get HANA database connection info (host, port, schema, database type).",
-        MakeSchema({}, {}),
-        [&session](const nlohmann::json&) -> ToolResult {
-            auto result = BwGetDbInfo(session);
+        WithDestination({}, {}),
+        [&manager](const nlohmann::json& params) -> ToolResult {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            auto result = BwGetDbInfo(*sess);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             const auto& info = result.Value();
@@ -1786,9 +1945,15 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_sysinfo",
         "Get BW system properties (system configuration key-value pairs).",
-        MakeSchema({}, {}),
-        [&session](const nlohmann::json&) -> ToolResult {
-            auto result = BwGetSystemInfo(session);
+        WithDestination({}, {}),
+        [&manager](const nlohmann::json& params) -> ToolResult {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            auto result = BwGetSystemInfo(*sess);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -1804,9 +1969,15 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_changeability",
         "Get per-TLOGO changeability and transport settings. Shows which BW object "
         "types can be modified and whether they require transport requests.",
-        MakeSchema({}, {}),
-        [&session](const nlohmann::json&) -> ToolResult {
-            auto result = BwGetChangeability(session);
+        WithDestination({}, {}),
+        [&manager](const nlohmann::json& params) -> ToolResult {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            auto result = BwGetChangeability(*sess);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -1823,9 +1994,15 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_adturi",
         "Get BW-to-ADT URI mappings. Shows how BW modeling URIs map to "
         "standard ADT URIs for cross-navigation.",
-        MakeSchema({}, {}),
-        [&session](const nlohmann::json&) -> ToolResult {
-            auto result = BwGetAdtUriMappings(session);
+        WithDestination({}, {}),
+        [&manager](const nlohmann::json& params) -> ToolResult {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            auto result = BwGetAdtUriMappings(*sess);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -1843,7 +2020,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "Get cross-references (dependencies) for a BW object. Shows which objects "
         "use or are used by the specified object. Useful for impact analysis and "
         "data lineage exploration.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type (ADSO, IOBJ, TRFN, DTPA, etc.)")},
              {"object_name", StringProp("Object name")},
              {"object_version", StringProp("Version: A (active), M (modified)")},
@@ -1851,7 +2028,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"associated_object_type", StringProp("Filter by related type (IOBJ, ADSO, etc.)")},
              {"max_results", IntProp("Maximum number of results to return")}},
             {"object_type", "object_name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto obj_type = RequireString(params, "object_type", err);
             if (!obj_type) return err;
@@ -1869,7 +2046,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             if (!assoc_type.empty()) opts.associated_object_type = assoc_type;
             opts.max_results = OptInt(params, "max_results", 0);
 
-            auto result = BwGetXrefs(session, opts);
+            auto result = BwGetXrefs(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -1890,7 +2067,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_nodes",
         "Get child node structure of a BW object. Lists component objects "
         "(transformations, DTPs, etc.) belonging to the specified object.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type (ADSO, IOBJ, etc.)")},
              {"object_name", StringProp("Object name")},
              {"datasource", {{"type", "boolean"},
@@ -1898,7 +2075,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"child_name", StringProp("Filter by child name")},
              {"child_type", StringProp("Filter by child type")}},
             {"object_type", "object_name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto obj_type = RequireString(params, "object_type", err);
             if (!obj_type) return err;
@@ -1916,7 +2093,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             auto child_type = OptString(params, "child_type");
             if (!child_type.empty()) opts.child_type = child_type;
 
-            auto result = BwGetNodes(session, opts);
+            auto result = BwGetNodes(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -1935,9 +2112,15 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_search_metadata",
         "Get BW search metadata definitions (filters, fields, and search domains).",
-        MakeSchema({}, {}),
-        [&session](const nlohmann::json&) -> ToolResult {
-            auto result = BwGetSearchMetadata(session);
+        WithDestination({}, {}),
+        [&manager](const nlohmann::json& params) -> ToolResult {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            auto result = BwGetSearchMetadata(*sess);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -1953,9 +2136,15 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_list_favorites",
         "List BW backend favorites entries.",
-        MakeSchema({}, {}),
-        [&session](const nlohmann::json&) -> ToolResult {
-            auto result = BwListBackendFavorites(session);
+        WithDestination({}, {}),
+        [&manager](const nlohmann::json& params) -> ToolResult {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            auto result = BwListBackendFavorites(*sess);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -1971,9 +2160,15 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_clear_favorites",
         "Delete all BW backend favorites.",
-        MakeSchema({}, {}),
-        [&session](const nlohmann::json&) -> ToolResult {
-            auto result = BwDeleteAllBackendFavorites(session);
+        WithDestination({}, {}),
+        [&manager](const nlohmann::json& params) -> ToolResult {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            auto result = BwDeleteAllBackendFavorites(*sess);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j;
@@ -1984,10 +2179,10 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_nodepath",
         "Resolve the repository node path for a BW object URI.",
-        MakeSchema(
+        WithDestination(
             {{"object_uri", StringProp("BW object URI (for example /sap/bw/modeling/adso/ZSALES/a)")}},
             {"object_uri"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto object_uri = RequireString(params, "object_uri", err);
             if (!object_uri) return err;
@@ -2007,12 +2202,12 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_application_log",
         "Query BW repository application log entries.",
-        MakeSchema(
+        WithDestination(
             {{"username", StringProp("Filter by username")},
              {"start_timestamp", StringProp("Filter start timestamp")},
              {"end_timestamp", StringProp("Filter end timestamp")}},
             {}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             BwApplicationLogOptions opts;
             auto username = OptString(params, "username");
             if (!username.empty()) opts.username = username;
@@ -2021,7 +2216,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             auto end = OptString(params, "end_timestamp");
             if (!end.empty()) opts.end_timestamp = end;
 
-            auto result = BwGetApplicationLog(session, opts);
+            auto result = BwGetApplicationLog(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -2038,7 +2233,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_message_text",
         "Resolve formatted BW message text for a message identifier and text type.",
-        MakeSchema(
+        WithDestination(
             {{"identifier", StringProp("Message identifier")},
              {"text_type", StringProp("Text type")},
              {"msgv1", StringProp("Message variable 1")},
@@ -2046,7 +2241,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"msgv3", StringProp("Message variable 3")},
              {"msgv4", StringProp("Message variable 4")}},
             {"identifier", "text_type"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto identifier = RequireString(params, "identifier", err);
             if (!identifier) return err;
@@ -2065,7 +2260,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             auto msgv4 = OptString(params, "msgv4");
             if (!msgv4.empty()) opts.msgv4 = msgv4;
 
-            auto result = BwGetMessageText(session, opts);
+            auto result = BwGetMessageText(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             const auto& msg = result.Value();
@@ -2079,12 +2274,12 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_validate",
         "Run BW validation endpoint for an object.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type")},
              {"object_name", StringProp("Object name")},
              {"action", StringProp("exists (default), new, standard_transport or is_plannable")}},
             {"object_type", "object_name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto object_type = RequireString(params, "object_type", err);
             if (!object_type) return err;
@@ -2098,7 +2293,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             // empty takes BwValidationOptions' default of "exists".
             opts.action = OptString(params, "action", "");
 
-            auto result = BwValidateObject(session, opts);
+            auto result = BwValidateObject(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -2115,9 +2310,15 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_move_requests",
         "List BW move request entries.",
-        MakeSchema({}, {}),
-        [&session](const nlohmann::json&) -> ToolResult {
-            auto result = BwListMoveRequests(session);
+        WithDestination({}, {}),
+        [&manager](const nlohmann::json& params) -> ToolResult {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            auto result = BwListMoveRequests(*sess);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -2133,7 +2334,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_valuehelp",
         "Read BW value-help endpoints under /sap/bw/modeling/is/values/*.",
-        MakeSchema(
+        WithDestination(
             {{"domain", StringProp("Value-help domain (for example infoareas, infoobject)")},
              {"query", StringProp("Raw query string k=v&k2=v2")},
              {"max_rows", IntProp("Maximum rows")},
@@ -2141,7 +2342,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"object_type", StringProp("Object type filter")},
              {"infoprovider", StringProp("InfoProvider filter")}},
             {"domain"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto domain = RequireString(params, "domain", err);
             if (!domain) return err;
@@ -2160,7 +2361,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             auto infoprovider = OptString(params, "infoprovider");
             if (!infoprovider.empty()) opts.infoprovider = infoprovider;
 
-            auto result = BwGetValueHelp(session, opts);
+            auto result = BwGetValueHelp(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -2175,12 +2376,12 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_virtualfolders",
         "Read BW virtual folders endpoint when available.",
-        MakeSchema(
+        WithDestination(
             {{"package_name", StringProp("Package filter")},
              {"object_type", StringProp("Object type filter")},
              {"user_name", StringProp("User filter")}},
             {}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             std::optional<std::string> package_name;
             std::optional<std::string> object_type;
             std::optional<std::string> user_name;
@@ -2206,11 +2407,11 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_datavolumes",
         "Read BW data volumes endpoint when available.",
-        MakeSchema(
+        WithDestination(
             {{"infoprovider", StringProp("InfoProvider filter")},
              {"max_rows", IntProp("Maximum rows")}},
             {}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             std::optional<std::string> infoprovider;
             std::optional<int> max_rows;
             auto ip = OptString(params, "infoprovider");
@@ -2234,7 +2435,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_reporting",
         "Run BW reporting metadata request (BICS reporting endpoint).",
-        MakeSchema(
+        WithDestination(
             {{"compid", StringProp("Query/component id")},
              {"dbgmode", {{"type", "boolean"}, {"description", "Set dbgmode=true"}}},
              {"metadata_only", {{"type", "boolean"}, {"description", "MetadataOnly header"}}},
@@ -2245,7 +2446,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"from_row", IntProp("FromRow header")},
              {"to_row", IntProp("ToRow header")}},
             {"compid"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto compid = RequireString(params, "compid", err);
             if (!compid) return err;
@@ -2265,7 +2466,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
                 opts.to_row = params["to_row"].get<int>();
             }
 
-            auto result = BwGetReportingMetadata(session, opts);
+            auto result = BwGetReportingMetadata(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             nlohmann::json j = nlohmann::json::array();
@@ -2280,12 +2481,12 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_query_properties",
         "Read the query properties of one BW InfoProvider.",
-        MakeSchema(
+        WithDestination(
             {{"infoprovider", StringProp("InfoProvider name (e.g. ZSALES)")},
              {"object_type", StringProp("TLOGO of the InfoProvider (e.g. ADSO)")},
              {"version", StringProp("Version: a (active) or m (modified)")}},
             {"infoprovider"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto infoprovider = RequireString(params, "infoprovider", err);
             if (!infoprovider) return err;
@@ -2309,13 +2510,13 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "Collect dependent objects for transport. Gathers objects related to "
         "the specified object with dataflow grouping. Mode: 000=necessary, "
         "001=complete, 003=dataflow above, 004=dataflow below.",
-        MakeSchema(
+        WithDestination(
             {{"object_type", StringProp("Object type (ADSO, IOBJ, etc.)")},
              {"object_name", StringProp("Object name")},
              {"mode", StringProp("Collection mode: 000 (necessary), 001 (complete), 003 (above), 004 (below)")},
              {"transport", StringProp("Transport request number (optional)")}},
             {"object_type", "object_name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto obj_type = RequireString(params, "object_type", err);
             if (!obj_type) return err;
@@ -2329,7 +2530,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             auto transport = OptString(params, "transport");
             if (!transport.empty()) opts.transport = transport;
 
-            auto result = BwTransportCollect(session, opts);
+            auto result = BwTransportCollect(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             const auto& cr = result.Value();
@@ -2369,11 +2570,11 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "Read a BW transformation (TRFN) with parsed field mappings. Returns "
         "source/target objects, source and target field lists, and transformation "
         "rules (field-to-field mappings with rule types like StepDirect, StepFormula).",
-        MakeSchema(
+        WithDestination(
             {{"name", StringProp("Transformation name")},
              {"version", StringProp("Version: a (active, default), m (modified)")}},
             {"name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto name = RequireString(params, "name", err);
             if (!name) return err;
@@ -2382,7 +2583,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             // Resolve content type from discovery (best-effort)
             std::string resolved_ct;
             {
-                auto disc = BwDiscover(session);
+                auto disc = BwDiscover(*sess);
                 if (disc.IsOk()) {
                     resolved_ct = BwResolveContentType(disc.Value(), "TRFN");
                 }
@@ -2446,11 +2647,11 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_read_adso",
         "Read a BW Advanced DataStore Object (ADSO) with parsed field list. "
         "Returns metadata and all fields with data types, lengths, and key flags.",
-        MakeSchema(
+        WithDestination(
             {{"name", StringProp("ADSO name")},
              {"version", StringProp("Version: a (active, default), m (modified)")}},
             {"name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto name = RequireString(params, "name", err);
             if (!name) return err;
@@ -2459,7 +2660,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             // Resolve content type from discovery (best-effort)
             std::string resolved_ct;
             {
-                auto disc = BwDiscover(session);
+                auto disc = BwDiscover(*sess);
                 if (disc.IsOk()) {
                     resolved_ct = BwResolveContentType(disc.Value(), "ADSO");
                 }
@@ -2492,11 +2693,11 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_read_dtp",
         "Read a BW Data Transfer Process (DTP) with parsed source/target. "
         "Returns source and target object names, types, and source system info.",
-        MakeSchema(
+        WithDestination(
             {{"name", StringProp("DTP name")},
              {"version", StringProp("Version: a (active, default), m (modified)")}},
             {"name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto name = RequireString(params, "name", err);
             if (!name) return err;
@@ -2505,7 +2706,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
             // Resolve content type from discovery (best-effort)
             std::string resolved_ct;
             {
-                auto disc = BwDiscover(session);
+                auto disc = BwDiscover(*sess);
                 if (disc.IsOk()) {
                     resolved_ct = BwResolveContentType(disc.Value(), "DTPA");
                 }
@@ -2563,12 +2764,12 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_read_rsds",
         "Read a BW DataSource (RSDS) with parsed segments and fields.",
-        MakeSchema(
+        WithDestination(
             {{"name", StringProp("DataSource name")},
              {"source_system", StringProp("Source system/logsys")},
              {"version", StringProp("Version: a (default), m, d")}},
             {"name", "source_system"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto name = RequireString(params, "name", err);
             if (!name) return err;
@@ -2604,12 +2805,12 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_read_query_component",
         "Read query-family BW components (QUERY/VARIABLE/RKF/CKF/FILTER/STRUCTURE) "
         "with structured references.",
-        MakeSchema(
+        WithDestination(
             {{"component_type", StringProp("Component type: query|variable|rkf|ckf|filter|structure")},
              {"name", StringProp("Component name")},
              {"version", StringProp("Version: a (default), m, d")}},
             {"component_type", "name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto component_type = RequireString(params, "component_type", err);
             if (!component_type) return err;
@@ -2619,7 +2820,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
 
             std::string resolved_ct;
             {
-                auto disc = BwDiscover(session);
+                auto disc = BwDiscover(*sess);
                 if (disc.IsOk()) {
                     resolved_ct = BwResolveContentType(disc.Value(), *component_type);
                 }
@@ -2694,11 +2895,11 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
     registry.Register(
         "bw_read_dataflow",
         "Read BW DataFlow (DMOD) topology with nodes and connections.",
-        MakeSchema(
+        WithDestination(
             {{"name", StringProp("DMOD name")},
              {"version", StringProp("Version: a (default), m, d")}},
             {"name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto name = RequireString(params, "name", err);
             if (!name) return err;
@@ -2706,7 +2907,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
 
             std::string resolved_ct;
             {
-                auto disc = BwDiscover(session);
+                auto disc = BwDiscover(*sess);
                 if (disc.IsOk()) {
                     resolved_ct = BwResolveContentType(disc.Value(), "DMOD");
                 }
@@ -2745,14 +2946,14 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "bw_lineage_graph",
         "Build canonical BW lineage graph from a DTP root. Produces nodes, "
         "edges, provenance, and warnings for data catalog ingestion.",
-        MakeSchema(
+        WithDestination(
             {{"dtp_name", StringProp("DTP name (lineage root)")},
              {"trfn_name", StringProp("Optional explicit TRFN name")},
              {"version", StringProp("Version: a (default), m, d")},
              {"include_xref", {{"type", "boolean"}, {"description", "Include xref expansion (default true)"}}},
              {"max_xref", IntProp("Maximum xref neighbors")}},
             {"dtp_name"}),
-        [&session](const nlohmann::json& params) -> ToolResult {
+        [&manager](const nlohmann::json& params) -> ToolResult {
             ToolResult err;
             auto dtp_name = RequireString(params, "dtp_name", err);
             if (!dtp_name) return err;
@@ -2771,7 +2972,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
                 opts.max_xref = params["max_xref"].get<int>();
             }
 
-            auto result = BwBuildLineageGraph(session, opts);
+            auto result = BwBuildLineageGraph(*sess, opts);
             if (result.IsErr()) return MakeErrorResult(result.Error());
 
             const auto& graph = result.Value();
@@ -2819,14 +3020,20 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "Build a unified cross-domain catalog (ABAP/DDIC/CDS packages and/or BW infoareas) "
         "into a Catalog Feed v1 JSON payload (entities/fields/edges), with stable, "
         "cross-run entity IDs.",
-        MakeSchema(
+        WithDestination(
             {{"sid", StringProp("System ID to stamp on entities (e.g. A4H)")},
              {"package", StringProp("ABAP/DDIC/CDS package(s), comma-separated")},
              {"infoarea", StringProp("BW infoarea(s), comma-separated")},
              {"max_depth", IntProp("Max package-tree recursion depth (default: 50)")}},
             {"sid"}),
-        [&session](const nlohmann::json& params) {
-            return HandleCatalogBuildTool(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleCatalogBuildTool(*sess, params);
         });
 
     registry.Register(
@@ -2834,7 +3041,7 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
         "Build a catalog over the given scope (same parameters as catalog_build) and "
         "render it as Catalog Feed v1 JSON (default), an OpenMetadata table profile, "
         "or a Mermaid flowchart.",
-        MakeSchema(
+        WithDestination(
             {{"sid", StringProp("System ID to stamp on entities (e.g. A4H)")},
              {"package", StringProp("ABAP/DDIC/CDS package(s), comma-separated")},
              {"infoarea", StringProp("BW infoarea(s), comma-separated")},
@@ -2843,8 +3050,14 @@ void RegisterAdtTools(ToolRegistry& registry, IAdtSession& session) {
              {"service_name", StringProp("OpenMetadata service name (default: erpl_adt)")},
              {"system_id", StringProp("OpenMetadata system id (default: sid)")}},
             {"sid"}),
-        [&session](const nlohmann::json& params) {
-            return HandleCatalogExportTool(session, params);
+        [&manager](const nlohmann::json& params) {
+            ToolResult derr;
+            auto dname = RequireString(params, "destination", derr);
+            if (!dname) return derr;
+            auto sres = manager.Get(*dname);
+            if (sres.IsErr()) return MakeErrorResult(sres.Error());
+            IAdtSession* sess = sres.Value();
+            return HandleCatalogExportTool(*sess, params);
         });
     // One reviewed classification for every tool, applied in one place:
     // see mcp/tool_metadata.hpp.
