@@ -274,7 +274,7 @@ jobs:
           path: dist/*.whl
 
   release:
-    needs: build
+    needs: [build, pypi-wheels]
     timeout-minutes: 15
     runs-on: ubuntu-latest
     name: Create Release
