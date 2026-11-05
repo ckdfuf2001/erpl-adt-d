@@ -138,18 +138,25 @@ erpl-adt source check /sap/bc/adt/oo/classes/zcl_my_class/source/main
 
 ## Installation (this fork)
 
+PyPI에는 올리지 않는다. [Releases](https://github.com/ckdfuf2001/erpl-adt-d/releases/latest)에서 받아 로컬로 설치한다.
+
+1. 자기 플랫폼 휠(`erpl_adt_d-<version>-py3-none-<tag>.whl`)을 내려받는다.
+   예: Windows면 `...-win_amd64.whl`, Linux x86_64면 `...-manylinux_2_17_x86_64.whl`.
+2. 로컬 설치:
+
 ```bash
-uvx erpl-adt-d --help
-pip install erpl-adt-d
+pip install ./erpl_adt_d-<version>-py3-none-win_amd64.whl
+erpl-adt-d --help
 ```
+
+바이너리만 쓰고 싶으면 플랫폼 아카이브(`erpl-adt-d-windows-x64.zip` 등)를 받아 풀고,
+`erpl-adt-d` / `erpl-adt-d.exe`를 PATH에 넣는다.
 
 Then point it at your destinations file (see `destinations.example.json`):
 
 ```bash
 erpl-adt-d mcp --destinations-file ./my-destinations.json --tools adt
 ```
-
-Binaries are also attached to each [release](https://github.com/ckdfuf2001/erpl-adt-d/releases).
 
 ## Installation (upstream reference)
 
