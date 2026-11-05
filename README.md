@@ -136,7 +136,22 @@ erpl-adt ddic cds I_AIRLINE
 erpl-adt source check /sap/bc/adt/oo/classes/zcl_my_class/source/main
 ```
 
-## Installation
+## Installation (this fork)
+
+```bash
+uvx erpl-adt-d --help
+pip install erpl-adt-d
+```
+
+Then point it at your destinations file (see `destinations.example.json`):
+
+```bash
+erpl-adt-d mcp --destinations-file ./my-destinations.json --tools adt
+```
+
+Binaries are also attached to each [release](https://github.com/ckdfuf2001/erpl-adt-d/releases).
+
+## Installation (upstream reference)
 
 The quickest way to run erpl-adt — no download needed:
 
@@ -150,7 +165,7 @@ Or install permanently:
 pip install erpl-adt
 ```
 
-Alternatively, download the binary for your platform from the [latest release](https://github.com/datazooDE/erpl-adt/releases/latest), or [build from source](#building-from-source).
+Alternatively, download the binary for your platform from this fork's [latest release](https://github.com/ckdfuf2001/erpl-adt-d/releases/latest), or [build from source](#building-from-source).
 
 | Platform | Architecture |
 |----------|-------------|

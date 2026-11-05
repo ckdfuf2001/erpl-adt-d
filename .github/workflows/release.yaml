@@ -18,22 +18,22 @@ jobs:
             name: linux-x86_64
             triplet: x64-linux
             binary: erpl-adt
-            archive: erpl-adt-linux-x86_64.tar.gz
+            archive: erpl-adt-d-linux-x86_64.tar.gz
           - os: macos-15
             name: macos-arm64
             triplet: arm64-osx
             binary: erpl-adt
-            archive: erpl-adt-macos-arm64.tar.gz
+            archive: erpl-adt-d-macos-arm64.tar.gz
           - os: macos-15
             name: macos-x86_64
             triplet: x64-osx
             binary: erpl-adt
-            archive: erpl-adt-macos-x86_64.tar.gz
+            archive: erpl-adt-d-macos-x86_64.tar.gz
           - os: windows-2022
             name: windows-x64
             triplet: x64-windows-static
             binary: erpl-adt.exe
-            archive: erpl-adt-windows-x64.zip
+            archive: erpl-adt-d-windows-x64.zip
 
     timeout-minutes: 115
     runs-on: ${{ matrix.os }}
@@ -242,16 +242,16 @@ jobs:
             chmod +x "$binary_path" 2>/dev/null || true
 
             python -m bin_to_wheel \
-              --name erpl-adt \
+              --name erpl-adt-d \
               --version "${{ steps.version.outputs.version }}" \
               --binary "$binary_path" \
               --platform "$platform" \
               --output-dir dist \
-              --entry-point erpl-adt \
-              --description "CLI for SAP ADT REST API" \
-              --author "DataZoo GmbH" \
+              --entry-point erpl-adt-d \
+              --description "CLI and MCP server for SAP ADT (per-call destinations fork)" \
+              --author "ckdfuf2001" \
               --license Apache-2.0 \
-              --url https://github.com/DataZooDE/erpl-adt \
+              --url https://github.com/ckdfuf2001/erpl-adt-d \
               --readme README.md
 
             echo "Built wheel for $platform"
@@ -280,7 +280,7 @@ jobs:
     name: Publish to PyPI
     environment:
       name: pypi
-      url: https://pypi.org/p/erpl-adt
+      url: https://pypi.org/p/erpl-adt-d
     permissions:
       id-token: write
 
